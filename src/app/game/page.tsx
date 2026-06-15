@@ -1,6 +1,7 @@
 'use client'
 import { useState, useEffect, useCallback, useRef, FormEvent } from 'react'
 import { useRouter } from 'next/navigation'
+import { isValidCpf } from '@/lib/cpf'
 
 /* ═══════════════════════════════════════════════════
    Types
@@ -191,7 +192,7 @@ function DepositGate({
   async function handleGenerate(e: FormEvent) {
     e.preventDefault()
     setError('')
-    if (cpf.replace(/\D/g,'').length !== 11) { setError('CPF inválido (11 dígitos)'); return }
+    if (!isValidCpf(cpf)) { setError('CPF inválido'); return }
     if (finalAmount < 10) { setError('Valor mínimo: R$ 10'); return }
     setLoading(true)
     try {
