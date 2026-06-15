@@ -1,0 +1,121 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+html, body { overflow: hidden; height: 100%; width: 100%; }
+
+/* ── Balloon fall with gentle sway ── */
+@keyframes fall {
+  0%   { transform: translateY(-160px) rotate(-4deg); }
+  25%  { transform: translateY(25vh) rotate(3deg); }
+  50%  { transform: translateY(50vh) rotate(-2deg); }
+  75%  { transform: translateY(75vh) rotate(3deg); }
+  100% { transform: translateY(108vh) rotate(0deg); }
+}
+
+/* ── Pop burst ── */
+@keyframes pop {
+  0%   { transform: scale(1);   opacity: 1; filter: brightness(1.5); }
+  50%  { transform: scale(1.7); opacity: 0.6; }
+  100% { transform: scale(0.1); opacity: 0; }
+}
+
+/* ── Money float up ── */
+@keyframes floatUp {
+  0%   { transform: translateY(0) scale(1);   opacity: 1; }
+  30%  { transform: translateY(-20px) scale(1.15); opacity: 1; }
+  100% { transform: translateY(-80px) scale(0.9); opacity: 0; }
+}
+
+/* ── Particle burst ── */
+@keyframes burst {
+  0%   { transform: translate(0,0) scale(1); opacity: 1; }
+  100% { transform: translate(var(--tx),var(--ty)) scale(0); opacity: 0; }
+}
+
+/* ── Gold pulse on balance ── */
+@keyframes goldPulse {
+  0%, 100% { filter: drop-shadow(0 0 6px #ffd70088); }
+  50%       { filter: drop-shadow(0 0 16px #ffd700cc); }
+}
+
+/* ── Balance bump when earning ── */
+@keyframes bump {
+  0%,100% { transform: scale(1); }
+  40%     { transform: scale(1.22); }
+}
+
+/* ── Twinkle stars ── */
+@keyframes twinkle {
+  0%,100% { opacity: 0.15; }
+  50%     { opacity: 0.8; }
+}
+
+/* ── Spin loading ── */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Slide up entry ── */
+@keyframes slideUp {
+  from { transform: translateY(20px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+/* ── Pulse dot ── */
+@keyframes pulseDot {
+  0%,100% { transform: scale(1); opacity: 0.8; }
+  50%     { transform: scale(1.4); opacity: 1; }
+}
+
+.falling       { animation: fall var(--spd,6s) linear forwards; }
+.popping       { animation: pop 0.32s ease-out forwards; pointer-events: none; }
+.float-up      { animation: floatUp 0.9s ease-out forwards; pointer-events: none; }
+.burst-p       { animation: burst 0.45s ease-out forwards; pointer-events: none; }
+.gold-pulse    { animation: goldPulse 2.2s ease-in-out infinite; }
+.do-bump       { animation: bump 0.28s ease-out; }
+.slide-up      { animation: slideUp 0.35s ease-out; }
+.spin-slow     { animation: spin 1.2s linear infinite; }
+.pulse-dot     { animation: pulseDot 1s ease-in-out infinite; }
+
+.game-bg {
+  background: radial-gradient(ellipse at 50% -10%, #1e0a45 0%, #0c1a3e 55%, #040c1c 100%);
+}
+
+.glass {
+  background: rgba(255,255,255,0.07);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.13);
+}
+
+.glass-dark {
+  background: rgba(0,0,0,0.45);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.07);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #4f46e5; border-radius: 2px; }
+
+/* Input resets for mobile */
+input, select, button { -webkit-appearance: none; appearance: none; }
+input[type=number]::-webkit-inner-spin-button,
+input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; }
+
+/* Eliminate 300ms tap delay on all interactive elements */
+button, a, input, select, textarea { touch-action: manipulation; }
+
+/* Safe-area helpers */
+.hud-top    { padding-top: calc(env(safe-area-inset-top, 0px) + 8px);    padding-bottom: 8px; }
+.hud-bottom { padding-top: 10px; padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 10px); }
+.bar-top    { padding-top: calc(env(safe-area-inset-top, 0px) + 12px);   padding-bottom: 12px; }
+.sheet-body { padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 24px); }
+
+/* Option text inside selects — ensure readable on dark bg */
+option { background: #0c1a3e; color: #fff; }
