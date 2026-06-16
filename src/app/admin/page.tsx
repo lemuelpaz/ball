@@ -52,7 +52,7 @@ export default function AdminPage() {
               Entrar
             </button>
           </form>
-          <p className="text-gray-600 text-xs text-center mt-4">Senha padrão: admin123</p>
+
           <div className="mt-4 text-center">
             <a href="/" className="text-gray-500 text-xs hover:text-gray-300">← Voltar ao jogo</a>
           </div>
