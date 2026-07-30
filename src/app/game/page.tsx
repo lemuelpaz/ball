@@ -89,274 +89,191 @@ function DepositGate({ token, emailErro, setEmailErro, onDeposited }: DepositGat
   const [countdown,   setCountdown]   = useState(0)
   const [pixExpirado, setPixExpirado] = useState(false)
 
-  const pollingRef   = useRef<NodeJS.Timeout | null>(null)
-  const countdownRef = useRef<NodeJS.Timeout | null>(null)
-
-  const pararPolling = useCallback(() => {
-    if (pollingRef.current) {
-      clearInterval(pollingRef.current)
-      pollingRef.current = null
-    }
-  }, [])
-
-  const pararCountdown = useCallback(() => {
-    if (countdownRef.current) {
-      clearInterval(countdownRef.current)
-      countdownRef.current = null
-    }
-  }, [])
-
-  const iniciarCountdown = useCallback(() => {
-    pararCountdown()
+  useEffect(() => {
+    if (step !== 'qr') return
     const inicial = calcularTempoRestante()
-    if (inicial <= 0) {
-      setPixExpirado(true)
-      pararPolling()
-      return
-    }
     setCountdown(inicial)
-    setPixExpirado(false)
+    if (inicial === 0) { setPixExpirado(true); return }
 
-    countdownRef.current = setInterval(() => {
+    const intervalo = setInterval(() => {
       const restante = calcularTempoRestante()
-      if (restante <= 0) {
-        setCountdown(0)
-        setPixExpirado(true)
-        pararPolling()
-        pararCountdown()
-        return
-      }
       setCountdown(restante)
+      if (restante === 0) { setPixExpirado(true); clearInterval(intervalo) }
     }, 1000)
-  }, [pararCountdown, pararPolling])
 
-  /* suporte a recarga de página: se já havia um PIX ativo, retoma o QR */
-  useEffect(() => {
-    const criado = localStorage.getItem(PIX_TIMESTAMP_KEY)
-    if (!criado) return
-    const restante = calcularTempoRestante()
-    if (restante > 0) {
-      setStep('qr')
-      iniciarCountdown()
-    } else {
-      localStorage.removeItem(PIX_TIMESTAMP_KEY)
-      setPixExpirado(true)
-      setStep('qr')
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    return () => clearInterval(intervalo)
+  }, [step])
 
-  useEffect(() => {
-    return () => {
-      pararPolling()
-      pararCountdown()
-    }
-  }, [pararPolling, pararCountdown])
-
-  const iniciarPolling = useCallback((depositId: string) => {
-    pararPolling()
-    pollingRef.current = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/wallet/deposit/status?id=${depositId}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        })
-        if (!res.ok) return
-        const data = await res.json()
-        if (data.status === 'approved') {
-          pararPolling()
-          pararCountdown()
-          onDeposited()
-        }
-      } catch {
-        /* erros de rede são ignorados — próxima iteração tentará novamente */
-      }
-    }, 5000)
-  }, [token, onDeposited, pararPolling, pararCountdown])
-
-  const handleGerarPix = useCallback(async (e: FormEvent) => {
+  async function handleGerarPix(e: FormEvent) {
     e.preventDefault()
     setDepositErro('')
-
-    if (!amount || Number(amount) <= 0) {
-      setDepositErro('Informe um valor válido.')
-      return
-    }
-    if (!isEmailValido(email)) {
-      setEmailErro('E-mail inválido.')
-      return
-    }
+    if (!amount) { setDepositErro('Escolha um valor.'); return }
+    if (!isEmailValido(email)) { setEmailErro('E-mail inválido.'); return }
     setEmailErro('')
 
     try {
-      const res = await fetch('/api/wallet/deposit', {
+      const res = await fetch('/api/pix/criar', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ amount: Number(amount), email }),
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ amount, email }),
       })
       const data = await res.json()
-      if (!res.ok) {
-        setDepositErro('Não foi possível gerar o PIX. Tente novamente.')
-        return
-      }
-
-      const agora = Date.now().toString()
-      localStorage.setItem(PIX_TIMESTAMP_KEY, agora)
-
-      setQrCode(data.qrCode ?? '')
-      setPixKey(data.pixKey ?? '')
-      setPixExpirado(false)
+      if (!res.ok) { setDepositErro(data.erro ?? 'Erro ao gerar PIX.'); return }
+      setQrCode(data.qrCode)
+      setPixKey(data.pixKey)
+      localStorage.setItem(PIX_TIMESTAMP_KEY, String(Date.now()))
       setStep('qr')
-      iniciarCountdown()
-      if (data.id) iniciarPolling(data.id)
     } catch {
-      setDepositErro('Erro ao conectar. Tente novamente.')
+      setDepositErro('Erro de conexão.')
     }
-  }, [amount, email, token, setEmailErro, iniciarCountdown, iniciarPolling])
-
-  const handleNovoPixAposExpiracao = useCallback(() => {
-    pararPolling()
-    pararCountdown()
-    localStorage.removeItem(PIX_TIMESTAMP_KEY)
-    setQrCode('')
-    setPixKey('')
-    setPixExpirado(false)
-    setCountdown(0)
-    setAmount('')
-    setEmail('')
-    setDepositErro('')
-    setStep('form')
-  }, [pararPolling, pararCountdown])
-
-  const handleCopiar = useCallback(async () => {
-    if (!pixKey) return
-    try {
-      await navigator.clipboard.writeText(pixKey)
-      setCopiado(true)
-      setTimeout(() => setCopiado(false), 2000)
-    } catch {
-      /* falha silenciosa: usuário pode copiar manualmente */
-    }
-  }, [pixKey])
-
-  if (step === 'form') {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 p-4">
-        <div className="bg-white/10 backdrop-blur-sm rounded-2xl p-8 w-full max-w-md border border-white/20">
-          <h2 className="text-2xl font-bold text-white mb-6 text-center">Depositar via PIX</h2>
-          <form onSubmit={handleGerarPix} className="space-y-4">
-            <div>
-              <label className="block text-white/80 text-sm mb-2">Valor (R$)</label>
-              <div className="grid grid-cols-3 gap-2 mb-2">
-                {PRESET_AMOUNTS.map(v => (
-                  <button
-                    key={v}
-                    type="button"
-                    onClick={() => setAmount(v)}
-                    className={`py-2 rounded-lg text-sm font-semibold transition-colors ${
-                      amount === v
-                        ? 'bg-purple-500 text-white'
-                        : 'bg-white/10 text-white hover:bg-white/20'
-                    }`}
-                  >
-                    R$ {v}
-                  </button>
-                ))}
-              </div>
-              <input
-                type="number"
-                min="1"
-                step="0.01"
-                value={amount}
-                onChange={e => setAmount(e.target.value === '' ? '' : Number(e.target.value))}
-                placeholder="Outro valor"
-                className="w-full bg-white/10 border border-white/20 rounded-lg px-4 py-2 text-white placeholder-white/40 focus:outline-none focus:border-purple-400"
-              />
-            </div>
-            <div>
-              <label className="block text-white/80 text-sm mb-2">E-mail</label>
-              <input
-                type="email"
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                placeholder="seu@email.com"
-                className="w-full bg-white/10 border border-white/20 rounded-lg px-4 py-2 text-white placeholder-white/40 focus:outline-none focus:border-purple-400"
-              />
-              {emailErro && <p className="text-red-400 text-xs mt-1">{emailErro}</p>}
-            </div>
-            {depositErro && <p className="text-red-400 text-sm text-center">{depositErro}</p>}
-            <button
-              type="submit"
-              className="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 rounded-xl transition-colors"
-            >
-              Gerar PIX
-            </button>
-          </form>
-        </div>
-      </div>
-    )
   }
 
-  if (step === 'qr') {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 p-4">
-        <div className="bg-white/10 backdrop-blur-sm rounded-2xl p-8 w-full max-w-md border border-white/20 text-center">
-          <h2 className="text-2xl font-bold text-white mb-4">Pague via PIX</h2>
+  async function handleVerificarPagamento() {
+    setStep('checking')
+    try {
+      const res = await fetch('/api/pix/verificar', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const data = await res.json()
+      if (data.pago) { onDeposited(); return }
+      setDepositErro('Pagamento ainda não confirmado.')
+      setStep('qr')
+    } catch {
+      setDepositErro('Erro ao verificar pagamento.')
+      setStep('qr')
+    }
+  }
 
-          {pixExpirado ? (
-            <div className="space-y-4">
-              <p className="text-red-400 font-semibold text-lg">PIX expirado</p>
-              <p className="text-white/60 text-sm">O QR Code expirou após 30 minutos.</p>
-              <button
-                onClick={handleNovoPixAposExpiracao}
-                className="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 rounded-xl transition-colors"
-              >
-                Gerar novo PIX
+  async function copiarChavePix() {
+    await navigator.clipboard.writeText(pixKey)
+    setCopiado(true)
+    setTimeout(() => setCopiado(false), 2000)
+  }
+
+  if (step === 'form') return (
+    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', minHeight:'100vh', background:'#0f172a', padding:'1rem' }}>
+      <div style={{ background:'#1e293b', borderRadius:'1.5rem', padding:'2rem', width:'100%', maxWidth:'420px', boxShadow:'0 8px 32px rgba(0,0,0,0.4)' }}>
+        <h1 style={{ textAlign:'center', color:'#f8fafc', marginBottom:'1.5rem', fontSize:'1.5rem' }}>💰 Faça seu depósito</h1>
+        <form onSubmit={handleGerarPix}>
+          <p style={{ color:'#94a3b8', marginBottom:'0.75rem' }}>Escolha o valor:</p>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'0.5rem', marginBottom:'1rem' }}>
+            {PRESET_AMOUNTS.map(v => (
+              <button key={v} type="button"
+                onClick={() => setAmount(v)}
+                style={{ padding:'0.6rem', borderRadius:'0.75rem', border:'2px solid', borderColor: amount === v ? '#6366f1' : '#334155', background: amount === v ? '#6366f1' : '#0f172a', color:'#f8fafc', cursor:'pointer', fontWeight: amount === v ? 700 : 400 }}>
+                R$ {v}
+              </button>
+            ))}
+          </div>
+          <input
+            type="email" placeholder="Seu e-mail" value={email}
+            onChange={e => setEmail(e.target.value)}
+            style={{ width:'100%', padding:'0.75rem', borderRadius:'0.75rem', border:'1px solid #334155', background:'#0f172a', color:'#f8fafc', marginBottom:'0.5rem', boxSizing:'border-box' }}
+          />
+          {emailErro && <p style={{ color:'#f87171', fontSize:'0.85rem', marginBottom:'0.5rem' }}>{emailErro}</p>}
+          {depositErro && <p style={{ color:'#f87171', fontSize:'0.85rem', marginBottom:'0.5rem' }}>{depositErro}</p>}
+          <button type="submit"
+            style={{ width:'100%', padding:'0.85rem', borderRadius:'0.75rem', background:'#6366f1', color:'#fff', fontWeight:700, fontSize:'1rem', border:'none', cursor:'pointer', marginTop:'0.5rem' }}>
+            Gerar PIX
+          </button>
+        </form>
+      </div>
+    </div>
+  )
+
+  if (step === 'checking') return (
+    <div style={{ display:'flex', alignItems:'center', justifyContent:'center', minHeight:'100vh', background:'#0f172a' }}>
+      <p style={{ color:'#94a3b8', fontSize:'1.2rem' }}>Verificando pagamento…</p>
+    </div>
+  )
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', minHeight:'100vh', background:'#0f172a', padding:'1rem' }}>
+      <div style={{ background:'#1e293b', borderRadius:'1.5rem', padding:'2rem', width:'100%', maxWidth:'420px', textAlign:'center', boxShadow:'0 8px 32px rgba(0,0,0,0.4)' }}>
+        <h2 style={{ color:'#f8fafc', marginBottom:'0.5rem' }}>📲 Pague via PIX</h2>
+        {pixExpirado ? (
+          <p style={{ color:'#f87171' }}>PIX expirado. Recarregue a página para gerar um novo.</p>
+        ) : (
+          <>
+            <p style={{ color:'#94a3b8', marginBottom:'1rem' }}>Expira em: <strong style={{ color:'#fbbf24' }}>{formatarCountdown(countdown)}</strong></p>
+            {qrCode && <img src={qrCode} alt="QR Code PIX" style={{ width:'200px', height:'200px', borderRadius:'0.75rem', marginBottom:'1rem' }} />}
+            <div style={{ display:'flex', gap:'0.5rem', justifyContent:'center', marginBottom:'1rem' }}>
+              <input readOnly value={pixKey} style={{ flex:1, padding:'0.6rem', borderRadius:'0.75rem', border:'1px solid #334155', background:'#0f172a', color:'#f8fafc', fontSize:'0.8rem' }} />
+              <button onClick={copiarChavePix}
+                style={{ padding:'0.6rem 1rem', borderRadius:'0.75rem', background: copiado ? '#34d399' : '#6366f1', color:'#fff', border:'none', cursor:'pointer' }}>
+                {copiado ? '✓' : 'Copiar'}
               </button>
             </div>
-          ) : (
-            <div className="space-y-4">
-              <div className="flex items-center justify-center gap-2 mb-2">
-                <span className="text-white/70 text-sm">Expira em:</span>
-                <span className="text-yellow-400 font-mono font-bold text-lg">
-                  {formatarCountdown(countdown)}
-                </span>
-              </div>
-              {qrCode && (
-                <div className="flex justify-center mb-4">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={qrCode} alt="QR Code PIX" className="w-48 h-48 rounded-lg" />
-                </div>
-              )}
-              {pixKey && (
-                <div className="space-y-2">
-                  <p className="text-white/70 text-sm">Ou copie a chave PIX:</p>
-                  <div className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white/80 text-xs break-all">
-                    {pixKey}
-                  </div>
-                  <button
-                    onClick={handleCopiar}
-                    className="w-full bg-white/10 hover:bg-white/20 text-white font-semibold py-2 rounded-lg transition-colors text-sm"
-                  >
-                    {copiado ? '✓ Copiado!' : 'Copiar chave PIX'}
-                  </button>
-                </div>
-              )}
-              <p className="text-white/50 text-xs">Aguardando confirmação do pagamento…</p>
-            </div>
-          )}
-        </div>
+            {depositErro && <p style={{ color:'#f87171', fontSize:'0.85rem', marginBottom:'0.5rem' }}>{depositErro}</p>}
+            <button onClick={handleVerificarPagamento}
+              style={{ width:'100%', padding:'0.85rem', borderRadius:'0.75rem', background:'#22c55e', color:'#fff', fontWeight:700, fontSize:'1rem', border:'none', cursor:'pointer' }}>
+              Já paguei ✓
+            </button>
+          </>
+        )}
       </div>
-    )
-  }
-
-  return null
+    </div>
+  )
 }
 
 /* ═══════════════════════════════════════════════════
-   Main Page — state machine
+   BalloonEl
 ═══════════════════════════════════════════════════ */
-export default function GamePage() {
-  const router  = use
+interface BalloonElProps {
+  balloon: Balloon
+  paused: boolean
+  onPop: (b: Balloon) => void
+}
+
+function BalloonEl({ balloon, paused, onPop }: BalloonElProps) {
+  return (
+    <div
+      onClick={() => { if (!paused) onPop(balloon) }}
+      style={{
+        position: 'absolute',
+        left: `${balloon.x}%`,
+        bottom: '-120px',
+        width: `${balloon.size}px`,
+        height: `${balloon.size * 1.2}px`,
+        cursor: paused ? 'default' : 'pointer',
+        animation: `falling ${balloon.speed}s linear forwards`,
+        animationPlayState: paused ? 'paused' : 'running',
+        userSelect: 'none',
+        filter: balloon.popped ? 'blur(4px) opacity(0.3)' : 'none',
+        transition: 'filter 0.15s',
+        zIndex: 10,
+      }}
+    >
+      <svg viewBox="0 0 100 130" width="100%" height="100%">
+        <ellipse cx="50" cy="50" rx="42" ry="48" fill={balloon.color} />
+        <ellipse cx="38" cy="32" rx="10" ry="14" fill="rgba(255,255,255,0.25)" transform="rotate(-20,38,32)" />
+        <polygon points="50,98 44,110 56,110" fill={balloon.color} />
+        <line x1="50" y1="110" x2="50" y2="128" stroke="#94a3b8" strokeWidth="1.5" />
+      </svg>
+      <div style={{ position:'absolute', top:'38%', left:'50%', transform:'translate(-50%,-50%)', color:'#fff', fontWeight:800, fontSize:`${balloon.size * 0.18}px`, textShadow:'0 1px 3px rgba(0,0,0,0.5)', pointerEvents:'none' }}>
+        R${balloon.value.toFixed(2)}
+      </div>
+    </div>
+  )
+}
+
+/* ═══════════════════════════════════════════════════
+   GameScreen
+═══════════════════════════════════════════════════ */
+interface GameScreenProps {
+  token: string
+  saldo: number
+  onSaldoUpdate: (novo: number) => void
+}
+
+function GameScreen({ token, saldo, onSaldoUpdate }: GameScreenProps) {
+  const [cfg]        = useState<GameCfg>(DEFAULT_CFG)
+  const [balloons,   setBalloons]   = useState<Balloon[]>([])
+  const [score,      setScore]      = useState(0)
+  const [paused,     setPaused]     = useState(false)
+  const [fxMoney,    setFxMoney]    = useState<FxMoney[]>([])
+  const [fxParticles,setFxParticles]= useState<FxParticle[]>([])
+  const spawnRef  = useRef<ReturnType<typeof setInterval> | null>(null)
+  const cleanRef  = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const sp
