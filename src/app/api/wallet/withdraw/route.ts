@@ -9,7 +9,8 @@ export async function POST(req: NextRequest) {
     const user = getUserFromRequest(req)
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
 
-    const { amount, pixKey, pixKeyType } = await req.json()
+    const body = await req.json()
+    const { amount, pixKey, pixKeyType } = body
 
     const [minStr, maxStr, dailyLimitStr] = await Promise.all([
       getConfig('finance_min_withdrawal', '20.00'),
@@ -21,13 +22,13 @@ export async function POST(req: NextRequest) {
     const maxWithdrawal = parseFloat(maxStr)
     const dailyLimit = parseFloat(dailyLimitStr)
 
-    if (!amount || amount < minWithdrawal) {
+    if (!amount || typeof amount !== 'number' || amount < minWithdrawal) {
       return NextResponse.json({ error: `Saque mínimo: R$ ${minWithdrawal.toFixed(2)}` }, { status: 400 })
     }
     if (amount > maxWithdrawal) {
       return NextResponse.json({ error: `Saque máximo: R$ ${maxWithdrawal.toFixed(2)}` }, { status: 400 })
     }
-    if (!pixKey || !pixKeyType) {
+    if (!pixKey || typeof pixKey !== 'string' || !pixKeyType || typeof pixKeyType !== 'string') {
       return NextResponse.json({ error: 'Chave PIX é obrigatória' }, { status: 400 })
     }
 
@@ -57,42 +58,37 @@ export async function POST(req: NextRequest) {
 
     const externalId = randomUUID()
 
-    await prisma.user.update({
-      where: { id: user.userId },
-      data: { balance: { decrement: amount } },
+    // Chama o gateway antes de qualquer persistência — se falhar, nada é gravado
+    const gatewayResult = await veopagCreateWithdrawal({
+      amount,
+      externalId,
+      pixKey,
+      pixKeyType,
+      receiverName: dbUser.name,
     })
 
-    try {
-      const result = await veopagCreateWithdrawal({
-        amount,
-        externalId,
-        pixKey,
-        pixKeyType,
-        receiverName: dbUser.name,
-      })
-
-      await prisma.transaction.create({
+    // Persiste o débito e o registro de transação atomicamente apenas após
+    // confirmação do gateway, eliminando a necessidade de rollback manual
+    await prisma.$transaction([
+      prisma.user.update({
+        where: { id: user.userId },
+        data: { balance: { decrement: amount } },
+      }),
+      prisma.transaction.create({
         data: {
           userId: user.userId,
           type: 'withdrawal',
           amount,
           status: 'PENDING',
           externalId,
-          metadata: JSON.stringify(result),
+          metadata: JSON.stringify(gatewayResult),
         },
-      })
+      }),
+    ])
 
-      return NextResponse.json({ success: true, externalId, message: 'Saque solicitado com sucesso' })
-    } catch (veopagError) {
-      await prisma.user.update({
-        where: { id: user.userId },
-        data: { balance: { increment: amount } },
-      })
-      throw veopagError
-    }
-  } catch (err: unknown) {
-    console.error('Withdrawal error:', err)
-    const message = err instanceof Error ? err.message : 'Erro ao processar saque'
-    return NextResponse.json({ error: message }, { status: 500 })
+    return NextResponse.json({ success: true, externalId, message: 'Saque solicitado com sucesso' })
+  } catch (err) {
+    // Erro genérico para não expor detalhes internos ao cliente
+    return NextResponse.json({ error: 'Erro interno ao processar saque' }, { status: 500 })
   }
 }
