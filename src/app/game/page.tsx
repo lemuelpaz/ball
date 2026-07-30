@@ -34,6 +34,9 @@ const COLORS = [
 
 const PRESET_AMOUNTS = [10, 20, 50, 100, 200, 500]
 
+const PIX_EXPIRACAO_MS = 30 * 60 * 1000
+const PIX_TIMESTAMP_KEY = 'pixCriadoEm'
+
 let _seq = 0
 function uid() { return `${Date.now()}-${_seq++}` }
 
@@ -49,58 +52,140 @@ function mkBalloon(cfg: GameCfg): Balloon {
   }
 }
 
+function calcularTempoRestante(): number {
+  const criado = localStorage.getItem(PIX_TIMESTAMP_KEY)
+  if (!criado) return 0
+  const decorrido = Date.now() - parseInt(criado, 10)
+  const restante = PIX_EXPIRACAO_MS - decorrido
+  return restante > 0 ? Math.floor(restante / 1000) : 0
+}
+
+function formatarCountdown(segundos: number): string {
+  const m = Math.floor(segundos / 60).toString().padStart(2, '0')
+  const s = (segundos % 60).toString().padStart(2, '0')
+  return `${m}:${s}`
+}
+
 /* ═══════════════════════════════════════════════════
-   Main Page — state machine
+   DepositGate
 ═══════════════════════════════════════════════════ */
-export default function GamePage() {
-  const router  = useRouter()
-  const [phase,   setPhase]   = useState<Phase>('loading')
-  const [token,   setToken]   = useState('')
-  const [balance, setBalance] = useState(0)
-  const [cfg,     setCfg]     = useState<GameCfg>(DEFAULT_CFG)
-  const [emailErro, setEmailErro] = useState('')
+type DepositStep = 'form' | 'qr' | 'checking'
 
-  useEffect(() => {
-    const t = localStorage.getItem('gameToken')
-    if (!t) { router.replace('/'); return }
-    setToken(t)
+interface DepositGateProps {
+  token: string
+  emailErro: string
+  setEmailErro: (v: string) => void
+  onDeposited: () => void
+}
 
-    Promise.all([
-      fetch('/api/wallet/balance', { headers: { Authorization: `Bearer ${t}` } }).then(r => r.json()),
-      fetch('/api/admin/config').then(r => r.json()),
-    ]).then(([walletData, cfgData]) => {
-      const bal = walletData.balance ?? 0
-      setBalance(bal)
+function DepositGate({ token, emailErro, setEmailErro, onDeposited }: DepositGateProps) {
+  const [step,        setStep]        = useState<DepositStep>('form')
+  const [amount,      setAmount]      = useState<number | ''>('')
+  const [email,       setEmail]       = useState('')
+  const [qrCode,      setQrCode]      = useState('')
+  const [pixKey,      setPixKey]      = useState('')
+  const [depositErro, setDepositErro] = useState('')
+  const [copiado,     setCopiado]     = useState(false)
+  const [countdown,   setCountdown]   = useState(0)
+  const [pixExpirado, setPixExpirado] = useState(false)
 
-      if (cfgData.game_balloon_values) {
-        setCfg({
-          values:  cfgData.game_balloon_values.split(',').map(Number),
-          spawnMs: parseInt(cfgData.game_spawn_interval ?? '1500'),
-          minSpd:  parseFloat(cfgData.game_min_speed ?? '4'),
-          maxSpd:  parseFloat(cfgData.game_max_speed ?? '8'),
-          minSz:   parseFloat(cfgData.game_min_size  ?? '68'),
-          maxSz:   parseFloat(cfgData.game_max_size  ?? '98'),
-          maxB:    parseInt(cfgData.game_max_balloons ?? '8'),
-        })
-      }
-      setPhase(bal > 0 ? 'game' : 'deposit')
-    }).catch(() => {
-      setPhase('deposit')
-    })
-  }, [router])
+  const pollingRef   = useRef<NodeJS.Timeout | null>(null)
+  const countdownRef = useRef<NodeJS.Timeout | null>(null)
 
-  const handleGenerate = useCallback(async (
-    e: FormEvent<HTMLFormElement>,
-    email: string,
-    amount: number,
-  ) => {
-    e.preventDefault()
-    setEmailErro('')
+  const pararPolling = useCallback(() => {
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current)
+      pollingRef.current = null
+    }
+  }, [])
 
-    if (!isEmailValido(email)) {
-      setEmailErro('Informe um endereço de e-mail válido.')
+  const pararCountdown = useCallback(() => {
+    if (countdownRef.current) {
+      clearInterval(countdownRef.current)
+      countdownRef.current = null
+    }
+  }, [])
+
+  const iniciarCountdown = useCallback(() => {
+    pararCountdown()
+    const inicial = calcularTempoRestante()
+    if (inicial <= 0) {
+      setPixExpirado(true)
+      pararPolling()
       return
     }
+    setCountdown(inicial)
+    setPixExpirado(false)
+
+    countdownRef.current = setInterval(() => {
+      const restante = calcularTempoRestante()
+      if (restante <= 0) {
+        setCountdown(0)
+        setPixExpirado(true)
+        pararPolling()
+        pararCountdown()
+        return
+      }
+      setCountdown(restante)
+    }, 1000)
+  }, [pararCountdown, pararPolling])
+
+  /* suporte a recarga de página: se já havia um PIX ativo, retoma o QR */
+  useEffect(() => {
+    const criado = localStorage.getItem(PIX_TIMESTAMP_KEY)
+    if (!criado) return
+    const restante = calcularTempoRestante()
+    if (restante > 0) {
+      setStep('qr')
+      iniciarCountdown()
+    } else {
+      localStorage.removeItem(PIX_TIMESTAMP_KEY)
+      setPixExpirado(true)
+      setStep('qr')
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      pararPolling()
+      pararCountdown()
+    }
+  }, [pararPolling, pararCountdown])
+
+  const iniciarPolling = useCallback((depositId: string) => {
+    pararPolling()
+    pollingRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/wallet/deposit/status?id=${depositId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (!res.ok) return
+        const data = await res.json()
+        if (data.status === 'approved') {
+          pararPolling()
+          pararCountdown()
+          onDeposited()
+        }
+      } catch {
+        /* erros de rede são ignorados — próxima iteração tentará novamente */
+      }
+    }, 5000)
+  }, [token, onDeposited, pararPolling, pararCountdown])
+
+  const handleGerarPix = useCallback(async (e: FormEvent) => {
+    e.preventDefault()
+    setDepositErro('')
+
+    if (!amount || Number(amount) <= 0) {
+      setDepositErro('Informe um valor válido.')
+      return
+    }
+    if (!isEmailValido(email)) {
+      setEmailErro('E-mail inválido.')
+      return
+    }
+    setEmailErro('')
 
     try {
       const res = await fetch('/api/wallet/deposit', {
@@ -109,259 +194,169 @@ export default function GamePage() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ email, amount }),
+        body: JSON.stringify({ amount: Number(amount), email }),
       })
-
+      const data = await res.json()
       if (!res.ok) {
-        setEmailErro('Não foi possível processar o depósito. Tente novamente.')
+        setDepositErro('Não foi possível gerar o PIX. Tente novamente.')
         return
       }
 
-      const data = await res.json()
-      setBalance(data.balance ?? balance)
-      setPhase('game')
+      const agora = Date.now().toString()
+      localStorage.setItem(PIX_TIMESTAMP_KEY, agora)
+
+      setQrCode(data.qrCode ?? '')
+      setPixKey(data.pixKey ?? '')
+      setPixExpirado(false)
+      setStep('qr')
+      iniciarCountdown()
+      if (data.id) iniciarPolling(data.id)
     } catch {
-      setEmailErro('Ocorreu um erro inesperado. Tente novamente.')
+      setDepositErro('Erro ao conectar. Tente novamente.')
     }
-  }, [token, balance])
+  }, [amount, email, token, setEmailErro, iniciarCountdown, iniciarPolling])
 
-  if (phase === 'loading') {
-    return (
-      <main className="flex min-h-screen items-center justify-center bg-gray-950">
-        <p className="text-white text-xl animate-pulse">Carregando…</p>
-      </main>
-    )
-  }
+  const handleNovoPixAposExpiracao = useCallback(() => {
+    pararPolling()
+    pararCountdown()
+    localStorage.removeItem(PIX_TIMESTAMP_KEY)
+    setQrCode('')
+    setPixKey('')
+    setPixExpirado(false)
+    setCountdown(0)
+    setAmount('')
+    setEmail('')
+    setDepositErro('')
+    setStep('form')
+  }, [pararPolling, pararCountdown])
 
-  if (phase === 'deposit') {
-    return (
-      <DepositPhase
-        onGenerate={handleGenerate}
-        emailErro={emailErro}
-      />
-    )
-  }
-
-  return (
-    <GamePhase
-      token={token}
-      balance={balance}
-      setBalance={setBalance}
-      cfg={cfg}
-    />
-  )
-}
-
-/* ═══════════════════════════════════════════════════
-   Deposit Phase
-═══════════════════════════════════════════════════ */
-interface DepositPhaseProps {
-  onGenerate: (e: FormEvent<HTMLFormElement>, email: string, amount: number) => Promise<void>
-  emailErro: string
-}
-
-function DepositPhase({ onGenerate, emailErro }: DepositPhaseProps) {
-  const [email,  setEmail]  = useState('')
-  const [amount, setAmount] = useState(PRESET_AMOUNTS[0])
-
-  return (
-    <main className="flex min-h-screen items-center justify-center bg-gray-950 p-4">
-      <div className="w-full max-w-md rounded-2xl bg-gray-900 p-8 shadow-2xl">
-        <h1 className="mb-6 text-center text-3xl font-bold text-white">Depositar</h1>
-
-        <form onSubmit={(e) => onGenerate(e, email, amount)} noValidate>
-          <div className="mb-4">
-            <label htmlFor="email" className="mb-1 block text-sm font-medium text-gray-300">
-              E-mail
-            </label>
-            <input
-              id="email"
-              type="email"
-              autoComplete="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className={`w-full rounded-lg bg-gray-800 px-4 py-2 text-white outline-none transition
-                focus:ring-2 ${emailErro ? 'ring-2 ring-red-500' : 'focus:ring-purple-500'}`}
-              placeholder="seu@email.com"
-              required
-            />
-            {emailErro && (
-              <p role="alert" className="mt-1 text-sm text-red-400">
-                {emailErro}
-              </p>
-            )}
-          </div>
-
-          <div className="mb-6">
-            <label className="mb-2 block text-sm font-medium text-gray-300">
-              Valor do depósito
-            </label>
-            <div className="grid grid-cols-3 gap-2">
-              {PRESET_AMOUNTS.map((v) => (
-                <button
-                  key={v}
-                  type="button"
-                  onClick={() => setAmount(v)}
-                  className={`rounded-lg py-2 font-semibold transition
-                    ${amount === v
-                      ? 'bg-purple-600 text-white'
-                      : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}
-                >
-                  R$ {v}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <button
-            type="submit"
-            className="w-full rounded-lg bg-purple-600 py-3 font-bold text-white
-              transition hover:bg-purple-500 active:scale-95"
-          >
-            Gerar QR Code
-          </button>
-        </form>
-      </div>
-    </main>
-  )
-}
-
-/* ═══════════════════════════════════════════════════
-   Game Phase
-═══════════════════════════════════════════════════ */
-interface GamePhaseProps {
-  token: string
-  balance: number
-  setBalance: (v: number) => void
-  cfg: GameCfg
-}
-
-function GamePhase({ token, balance, setBalance, cfg }: GamePhaseProps) {
-  const [balloons,    setBalloons]    = useState<Balloon[]>([])
-  const [fxMoney,     setFxMoney]     = useState<FxMoney[]>([])
-  const [fxParticles, setFxParticles] = useState<FxParticle[]>([])
-  const balanceRef = useRef(balance)
-
-  useEffect(() => { balanceRef.current = balance }, [balance])
-
-  /* spawn */
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setBalloons(prev => {
-        if (prev.filter(b => !b.popped).length >= cfg.maxB) return prev
-        return [...prev, mkBalloon(cfg)]
-      })
-    }, cfg.spawnMs)
-    return () => clearInterval(interval)
-  }, [cfg])
-
-  /* float */
-  useEffect(() => {
-    let raf: number
-    const step = () => {
-      setBalloons(prev =>
-        prev
-          .map(b => b.popped ? b : { ...b, x: b.x })
-          .filter(b => !b.popped)
-      )
-      raf = requestAnimationFrame(step)
-    }
-    raf = requestAnimationFrame(step)
-    return () => cancelAnimationFrame(raf)
-  }, [])
-
-  const pop = useCallback(async (balloon: Balloon, clientX: number, clientY: number) => {
-    setBalloons(prev => prev.map(b => b.id === balloon.id ? { ...b, popped: true } : b))
-
-    const particles: FxParticle[] = Array.from({ length: 8 }, () => ({
-      id: uid(),
-      x: clientX, y: clientY,
-      tx: clientX + (Math.random() - 0.5) * 120,
-      ty: clientY + (Math.random() - 0.5) * 120,
-      color: balloon.color,
-    }))
-    setFxParticles(prev => [...prev, ...particles])
-    setTimeout(() => {
-      setFxParticles(prev => prev.filter(p => !particles.some(pp => pp.id === p.id)))
-    }, 600)
-
-    const moneyFx: FxMoney = { id: uid(), x: clientX, y: clientY, value: balloon.value }
-    setFxMoney(prev => [...prev, moneyFx])
-    setTimeout(() => setFxMoney(prev => prev.filter(m => m.id !== moneyFx.id)), 900)
-
+  const handleCopiar = useCallback(async () => {
+    if (!pixKey) return
     try {
-      const res = await fetch('/api/wallet/pop', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ value: balloon.value }),
-      })
-      if (res.ok) {
-        const data = await res.json()
-        setBalance(data.balance ?? balanceRef.current + balloon.value)
-      }
+      await navigator.clipboard.writeText(pixKey)
+      setCopiado(true)
+      setTimeout(() => setCopiado(false), 2000)
     } catch {
-      /* falha silenciosa — o saldo será sincronizado no próximo ciclo */
+      /* falha silenciosa: usuário pode copiar manualmente */
     }
-  }, [token, setBalance])
+  }, [pixKey])
 
-  return (
-    <main className="relative flex min-h-screen flex-col overflow-hidden bg-gray-950">
-      {/* HUD */}
-      <header className="relative z-10 flex items-center justify-between px-6 py-4">
-        <span className="text-lg font-bold text-white">🎈 Balão</span>
-        <span className="rounded-full bg-gray-800 px-4 py-1 text-sm font-semibold text-green-400">
-          R$ {balance.toFixed(2)}
-        </span>
-      </header>
-
-      {/* Arena */}
-      <div className="relative flex-1">
-        {balloons.map(b => (
-          <button
-            key={b.id}
-            onClick={(e) => pop(b, e.clientX, e.clientY)}
-            style={{
-              left:   `${b.x}%`,
-              bottom: '0%',
-              width:  b.size,
-              height: b.size,
-              background: b.color,
-              borderRadius: '50%',
-              position: 'absolute',
-              cursor: 'pointer',
-              border: 'none',
-              boxShadow: `0 0 12px ${b.color}88`,
-              transition: 'bottom 0.1s linear',
-            }}
-            aria-label={`Balão R$ ${b.value.toFixed(2)}`}
-          >
-            <span className="text-xs font-bold text-white drop-shadow">
-              R${b.value.toFixed(2)}
-            </span>
-          </button>
-        ))}
-
-        {fxMoney.map(m => (
-          <div
-            key={m.id}
-            className="pointer-events-none absolute animate-bounce text-sm font-bold text-green-300"
-            style={{ left: m.x, top: m.y }}
-          >
-            +R${m.value.toFixed(2)}
-          </div>
-        ))}
-
-        {fxParticles.map(p => (
-          <div
-            key={p.id}
-            className="pointer-events-none absolute h-2 w-2 rounded-full"
-            style={{ left: p.x, top: p.y, background: p.color }}
-          />
-        ))}
+  if (step === 'form') {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 p-4">
+        <div className="bg-white/10 backdrop-blur-sm rounded-2xl p-8 w-full max-w-md border border-white/20">
+          <h2 className="text-2xl font-bold text-white mb-6 text-center">Depositar via PIX</h2>
+          <form onSubmit={handleGerarPix} className="space-y-4">
+            <div>
+              <label className="block text-white/80 text-sm mb-2">Valor (R$)</label>
+              <div className="grid grid-cols-3 gap-2 mb-2">
+                {PRESET_AMOUNTS.map(v => (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => setAmount(v)}
+                    className={`py-2 rounded-lg text-sm font-semibold transition-colors ${
+                      amount === v
+                        ? 'bg-purple-500 text-white'
+                        : 'bg-white/10 text-white hover:bg-white/20'
+                    }`}
+                  >
+                    R$ {v}
+                  </button>
+                ))}
+              </div>
+              <input
+                type="number"
+                min="1"
+                step="0.01"
+                value={amount}
+                onChange={e => setAmount(e.target.value === '' ? '' : Number(e.target.value))}
+                placeholder="Outro valor"
+                className="w-full bg-white/10 border border-white/20 rounded-lg px-4 py-2 text-white placeholder-white/40 focus:outline-none focus:border-purple-400"
+              />
+            </div>
+            <div>
+              <label className="block text-white/80 text-sm mb-2">E-mail</label>
+              <input
+                type="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                placeholder="seu@email.com"
+                className="w-full bg-white/10 border border-white/20 rounded-lg px-4 py-2 text-white placeholder-white/40 focus:outline-none focus:border-purple-400"
+              />
+              {emailErro && <p className="text-red-400 text-xs mt-1">{emailErro}</p>}
+            </div>
+            {depositErro && <p className="text-red-400 text-sm text-center">{depositErro}</p>}
+            <button
+              type="submit"
+              className="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 rounded-xl transition-colors"
+            >
+              Gerar PIX
+            </button>
+          </form>
+        </div>
       </div>
-    </main>
-  )
+    )
+  }
+
+  if (step === 'qr') {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 p-4">
+        <div className="bg-white/10 backdrop-blur-sm rounded-2xl p-8 w-full max-w-md border border-white/20 text-center">
+          <h2 className="text-2xl font-bold text-white mb-4">Pague via PIX</h2>
+
+          {pixExpirado ? (
+            <div className="space-y-4">
+              <p className="text-red-400 font-semibold text-lg">PIX expirado</p>
+              <p className="text-white/60 text-sm">O QR Code expirou após 30 minutos.</p>
+              <button
+                onClick={handleNovoPixAposExpiracao}
+                className="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 rounded-xl transition-colors"
+              >
+                Gerar novo PIX
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex items-center justify-center gap-2 mb-2">
+                <span className="text-white/70 text-sm">Expira em:</span>
+                <span className="text-yellow-400 font-mono font-bold text-lg">
+                  {formatarCountdown(countdown)}
+                </span>
+              </div>
+              {qrCode && (
+                <div className="flex justify-center mb-4">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={qrCode} alt="QR Code PIX" className="w-48 h-48 rounded-lg" />
+                </div>
+              )}
+              {pixKey && (
+                <div className="space-y-2">
+                  <p className="text-white/70 text-sm">Ou copie a chave PIX:</p>
+                  <div className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white/80 text-xs break-all">
+                    {pixKey}
+                  </div>
+                  <button
+                    onClick={handleCopiar}
+                    className="w-full bg-white/10 hover:bg-white/20 text-white font-semibold py-2 rounded-lg transition-colors text-sm"
+                  >
+                    {copiado ? '✓ Copiado!' : 'Copiar chave PIX'}
+                  </button>
+                </div>
+              )}
+              <p className="text-white/50 text-xs">Aguardando confirmação do pagamento…</p>
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  return null
 }
+
+/* ═══════════════════════════════════════════════════
+   Main Page — state machine
+═══════════════════════════════════════════════════ */
+export default function GamePage() {
+  const router  = use
