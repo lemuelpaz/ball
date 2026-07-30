@@ -80,6 +80,9 @@ html, body { overflow: hidden; height: 100%; width: 100%; }
 .spin-slow     { animation: spin 1.2s linear infinite; }
 .pulse-dot     { animation: pulseDot 1s ease-in-out infinite; }
 
+/* Garante pausa dos balões mesmo quando o style inline não for suficiente */
+.falling.paused { animation-play-state: paused !important; }
+
 .game-bg {
   background: radial-gradient(ellipse at 50% -10%, #1e0a45 0%, #0c1a3e 55%, #040c1c 100%);
 }
@@ -95,27 +98,4 @@ html, body { overflow: hidden; height: 100%; width: 100%; }
   background: rgba(0,0,0,0.45);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
-  border: 1px solid rgba(255,255,255,0.07);
-}
-
-/* Scrollbar */
-::-webkit-scrollbar { width: 4px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #4f46e5; border-radius: 2px; }
-
-/* Input resets for mobile */
-input, select, button { -webkit-appearance: none; appearance: none; }
-input[type=number]::-webkit-inner-spin-button,
-input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; }
-
-/* Eliminate 300ms tap delay on all interactive elements */
-button, a, input, select, textarea { touch-action: manipulation; }
-
-/* Safe-area helpers */
-.hud-top    { padding-top: calc(env(safe-area-inset-top, 0px) + 8px);    padding-bottom: 8px; }
-.hud-bottom { padding-top: 10px; padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 10px); }
-.bar-top    { padding-top: calc(env(safe-area-inset-top, 0px) + 12px);   padding-bottom: 12px; }
-.sheet-body { padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 24px); }
-
-/* Option text inside selects — ensure readable on dark bg */
-option { background: #0c1a3e; color: #fff; }
+  border: 1px solid rgba(255,255,2
